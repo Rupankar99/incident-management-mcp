@@ -1,6 +1,6 @@
 from models import Incident, IncidentReport, IncidentContext, Ticket
-from reporting_agent import ReportingAgent
-from ticketing_agent import IntelligentTicketingAgent
+from reporting import ReportingAgent
+from transport import IntelligentTicketingAgent
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Dict, List
@@ -9,11 +9,6 @@ import asyncio, json
 
 class IncidentManagementSystem:
     def __init__(self):
-        # ❌ REMOVE these (FastMCP handles Jira, Slack, PagerDuty tools internally)
-        # self.jira_tool = JiraMCPTool()
-        # self.slack_tool = SlackMCPTool()
-        # self.pagerduty_tool = PagerDutyMCPTool()
-
         self.reporting_agent = ReportingAgent()
 
         # ✅ Just initialize normally — no need to pass tools anymore

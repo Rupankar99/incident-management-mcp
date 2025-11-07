@@ -1,20 +1,12 @@
-from typing import List, Dict, Any, Optional
+import time
+from typing import Any
 from datetime import datetime
 import json
 from dataclasses import asdict
 import asyncio
-import random
-import re
-import os
 
-from models import (
-    Incident,
-    IncidentReport,
-    IncidentContext,
-    Ticket
-)
 from data_generation import(SyntheticIncidentGenerator)
-from incident_management_orchestrator import (IncidentManagementSystem)
+from orchestrator import (IncidentManagementSystem)
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -23,30 +15,16 @@ from langchain_ollama import ChatOllama
 from datetime import datetime
 import json
 import httpx 
-#from langchain.output_parsers import BaseOutputParser
-#from langchain.prompts import PromptTemplate
-#from langchain.output_parsers import StructuredOutputParser
 
 import json
+
+from task_queue.consumer import Consumer
+from task_queue.jobs_queue import SQLiteQueue
+from task_queue.producer import Producer
 client = httpx.Client(verify=False)
 
 # Load environment variables
 load_dotenv()
-
-
-output_schema = {
-  "reasoning": "string",
-  "use_pagerduty": "boolean",
-  "pagerduty_urgency": "string",
-  "use_slack": "boolean",
-  "slack_channel": "string",
-  "jira_priority": "string",
-  "create_jira": "boolean",
-  "create_war_room": "boolean",
-  "trigger_escalation": "boolean",
-  "confidence_level": "string",
-  "key_factors": ["string"]
-}
 
 #parser = StructuredOutputParser.from_json_schema(schema)
 
@@ -59,6 +37,25 @@ async def main():
     ╚══════════════════════════════════════════════════════════════════════════╝
     """)
 
+    # ------------------------
+
+    queue = SQLiteQueue("demo_queue.db")
+
+    producer1 = Producer(queue, "ProducerRupankar", [
+        {"task": "send message ", "data": "send message to jira-1"},
+    ])
+
+    print("Starting producers...\n")
+    producer1.start()
+    producer1.join()
+
+    time.sleep(1)
+
+    # Consumer
+    consumer1 = Consumer(queue, "Consumer-1", max_items=3)
+    consumer1.start()
+    consumer1.join()
+    # ------------------------
 
     ims = IncidentManagementSystem()
     await ims.initialize()

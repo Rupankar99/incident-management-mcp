@@ -7,104 +7,16 @@ from typing import Any, Dict, List
 import json
 
 # Import your MCP functions
-from mcps import create_jira_issue as _create_jira
-from mcps import send_slack_alert as _send_slack
-from mcps import create_pagerduty_incident as _create_pd
+from tools import create_jira_issue as _create_jira
+from tools import send_slack_alert as _send_slack
+from tools import create_pagerduty_incident as _create_pd
 
 
 # Wrap MCP tools as LangChain tools so the LLM can call them
 import sqlite3
 from datetime import datetime
 
-@tool
-def create_jira_issue(project: str, summary: str, description: str, priority: str) -> dict:
-    """Create a Jira ticket for incident tracking and push to DB."""
-
-    ticket_id = f"INC-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    print(f"🧰 Creating Jira issue: {ticket_id} | {summary} | Priority: {priority}")
-
-    # --- Database Insertion ---
-    # try:
-    #     conn = sqlite3.connect("incidents.db")
-    #     cursor = conn.cursor()
-
-    #     cursor.execute("""
-    #         CREATE TABLE IF NOT EXISTS jira_tickets (
-    #             id TEXT PRIMARY KEY,
-    #             project TEXT,
-    #             summary TEXT,
-    #             description TEXT,
-    #             priority TEXT,
-    #             created_at TEXT
-    #         )
-    #     """)
-
-    #     cursor.execute("""
-    #         INSERT INTO jira_tickets (id, project, summary, description, priority, created_at)
-    #         VALUES (?, ?, ?, ?, ?, ?)
-    #     """, (ticket_id, project, summary, description, priority, datetime.now().isoformat()))
-
-    #     conn.commit()
-    #     conn.close()
-    #     print("✅ Jira issue saved to DB.")
-
-    #     return {
-    #         "status": "success",
-    #         "ticket_id": ticket_id,
-    #         "project": project,
-    #         "priority": priority
-    #     }
-
-    # except Exception as e:
-    #     print("❌ DB Error:", e)
-    #     return {"status": "error", "message": str(e)}
-
-    return {
-            "status": "success",
-            "ticket_id": ticket_id,
-            "project": project,
-            "priority": priority
-        }
-
-@tool
-async def send_slack_alert(channel: str, severity: str, message: str) -> dict:
-    """Send an alert to a Slack channel to notify the team about incidents.
-    
-    Args:
-        channel: Slack channel - use #incidents-critical for severe, #incidents-high for high, #incidents for normal
-        severity: Severity level of the incident
-        message: The alert message to send to the team
-    """
-    print(f"🔧 [TOOL CALL] send_slack_alert: {channel} (Severity: {severity})")
-    return {
-        "channel":channel,
-        "severity":severity
-    }
-
-
-@tool
-async def create_pagerduty_incident(title: str, description: str, urgency: str, service_id: str) -> dict:
-    """Create a PagerDuty incident to wake up the on-call engineer.
-    
-    ONLY use this for truly critical issues that require immediate attention:
-    - Customer-facing outages affecting many users
-    - Revenue-impacting payment/checkout failures
-    - Security breaches or data loss incidents
-    
-    DO NOT use for internal tools during off-hours or issues that can wait until business hours.
-    
-    Args:
-        title: Title of the PagerDuty incident
-        description: Detailed description of why this requires immediate attention
-        urgency: 'high' for critical issues, 'low' for less urgent
-        service_id: The service ID for routing the incident
-    """
-    print(f"🔧 [TOOL CALL] create_pagerduty_incident: {title} (Urgency: {urgency})")
-    return {
-        "title":title,
-        "urgency":urgency
-    }
-
+from tools import create_jira_issue, send_slack_alert, create_pagerduty_incident
 
 class IntelligentTicketingAgent:
     """Intelligent agent that autonomously decides which MCP tools to call"""
