@@ -41,20 +41,24 @@ async def main():
 
     queue = SQLiteQueue("demo_queue.db")
 
-    producer1 = Producer(queue, "ProducerRupankar", [
-        {"task": "send message ", "data": "send message to jira-1"},
-    ])
+    # producer1 = Producer(queue, "Producer-1", [
+    #     {"task": "send message ", "data": "send message to jira-1"},
+    # ])
 
-    print("Starting producers...\n")
-    producer1.start()
-    producer1.join()
+    # print("Starting producers...\n")
+    # producer1.start()
+    # producer1.join()
 
     time.sleep(1)
 
-    # Consumer
-    consumer1 = Consumer(queue, "Consumer-1", max_items=3)
+    Consumer
+    consumer1 = Consumer(queue, "Consumer-1", max_items=1)
     consumer1.start()
     consumer1.join()
+
+    stats = queue.get_stats()
+    for status, count in stats.items():
+        print(f"{status.capitalize()}: {count}")
     # ------------------------
 
     ims = IncidentManagementSystem()
@@ -62,7 +66,7 @@ async def main():
     
     print("🔬 Generating scenarios...")
     generator = SyntheticIncidentGenerator()
-    scenarios = generator.generate_scenarios(count=5)
+    scenarios = generator.generate_scenarios(count=1)
     print(f"✓ Generated {len(scenarios)} scenarios\n")
     
     results = []
