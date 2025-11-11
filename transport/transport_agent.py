@@ -6,17 +6,14 @@ from models import Ticket, Incident, IncidentReport, IncidentContext
 from typing import Any, Dict, List
 import json
 
-# Import your MCP functions
-from tools import create_jira_issue as _create_jira
-from tools import send_slack_alert as _send_slack
-from tools import create_pagerduty_incident as _create_pd
-
-
-# Wrap MCP tools as LangChain tools so the LLM can call them
-import sqlite3
 from datetime import datetime
 
-from tools import create_jira_issue, send_slack_alert, create_pagerduty_incident
+from tools import create_jira_issue, post_slack_alert, trigger_pagerduty_incident
+import sqlite3
+import json
+
+DB_PATH = "/Users/rupankarchakroborty/Documents/incident-management-2/data.db"
+
 
 class IntelligentTicketingAgent:
     """Intelligent agent that autonomously decides which MCP tools to call"""
@@ -31,8 +28,8 @@ class IntelligentTicketingAgent:
         # Define the tools the LLM can use
         self.tools = [
             create_jira_issue,
-            send_slack_alert,
-            create_pagerduty_incident
+            post_slack_alert,
+            trigger_pagerduty_incident
         ]
         
         # Bind tools to LLM
@@ -59,163 +56,147 @@ class IntelligentTicketingAgent:
             parts.append("💰 REVENUE-IMPACTING")
         
         return "\n".join(parts)
-    
-    async def make_decision_and_execute(
-        self, 
-        incident: Incident, 
-        context: IncidentContext, 
 
-    ) -> Dict[str, Any]:
-        """Let the LLM autonomously decide which MCP tools to call and execute them"""
-        
+
+
+    async def make_decision_and_execute(
+        self,
+        incident,
+        context,
+    ) -> dict:
+        """Let the LLM autonomously decide which MCP tools to call and execute them."""
+
+        print(incident['payload_id'])
+        payload_record = self.get_payload_from_db(incident['payload_id'])
+        payload_data = payload_record.get("payload", {})
+        payload_metadata = {
+            k: v for k, v in payload_record.items() if k != "payload"
+        }
+
+        formatted_payload = json.dumps(payload_data, indent=2) if payload_data else "N/A"
+
+        # 🧠 Step 3: Build prompt for LLM
         system_prompt = """You are an expert incident coordinator with 15+ years of SRE experience.
 
-You have access to tools for managing incidents. Analyze the incident carefully and decide which tools to call.
+    You have access to tools for managing incidents. Analyze the incident carefully and decide which tools to call.
 
-DECISION GUIDELINES:
-- ALWAYS create a Jira ticket for tracking (choose appropriate priority)
-- Send Slack alerts for team visibility (choose channel based on severity)
-- ONLY create PagerDuty incidents for truly critical issues:
-  * Customer-facing outages affecting many users
-  * Revenue-impacting payment/checkout failures
-  * Security breaches or data loss
-- DO NOT wake engineers for:
-  * Internal tools during off-hours
-  * Issues that can wait until business hours
-  * Potential issues without confirmed customer impact
+    DECISION GUIDELINES:
+    - ALWAYS create a Jira ticket for tracking (choose appropriate priority)
+    - Send Slack alerts for team visibility (choose channel based on severity)
+    - ONLY create PagerDuty incidents for truly critical issues:
+    * Customer-facing outages affecting many users
+    * Revenue-impacting payment/checkout failures
+    * Security breaches or data loss
+    - DO NOT wake engineers for:
+    * Internal tools during off-hours
+    * Issues that can wait until business hours
+    * Potential issues without confirmed customer impact
 
-Think: "Would I want to be woken at 3 AM for this?" If no, don't page.
+    Think: "Would I want to be woken at 3 AM for this?" If no, don't page.
 
-Analyze the incident, explain your reasoning, then call the appropriate tools."""
+    Analyze the incident, explain your reasoning, then call the appropriate tools.
+    """
 
         user_prompt = f"""ANALYZE THIS INCIDENT:
 
-**Incident Details:**
-- ID: {incident.id}
-- Title: {incident.title}
-- Severity: {incident.severity.value}
-- Service: {incident.service}
-- Region: {incident.region}
+    **Incident Details:**
+    - ID: {incident.id}
+    - Title: {incident.title}
+    - Severity: {incident.severity.value}
+    - Service: {incident.service}
+    - Region: {incident.region}
 
-**Context:**
-{self._describe_context(context)}
+    **Classifier Metadata:**
+    - Severity ID: {payload_metadata.get("severity_id", "N/A")}
+    - Matched Pattern: {payload_metadata.get("matched_pattern", "N/A")}
+    - Is Incident: {payload_metadata.get("is_incident", "N/A")}
 
-**Technical Details:**
-- Error Rate: {incident.metrics.get('error_rate', 'N/A')}
-- Affected Components: {', '.join(incident.affected_components)}
+    **Context:**
+    {self._describe_context(context)}
 
-**Recent Logs:**
-{chr(10).join(incident.logs[:3])}
+    **Technical Details:**
+    - Error Rate: {incident.metrics.get('error_rate', 'N/A')}
+    - Affected Components: {', '.join(incident.affected_components)}
 
-**Questions to Consider:**
-1. Would YOU want to be woken up for this at this time?
-2. How many customers are affected RIGHT NOW?
-3. Can this wait until business hours?
-4. Is this causing revenue loss or just potential issues?
+    **Payload (from classifier_outputs):**
+    {formatted_payload}
 
-Think through your decision and call the appropriate tools now."""
+    **Recent Logs:**
+    {chr(10).join(incident.logs[:3])}
+
+    **Questions to Consider:**
+    1. Would YOU want to be woken up for this at this time?
+    2. How many customers are affected RIGHT NOW?
+    3. Can this wait until business hours?
+    4. Is this causing revenue loss or just potential issues?
+
+    Think through your decision and call the appropriate tools now.
+    """
 
         messages = [
             HumanMessage(content=system_prompt + "\n\n" + user_prompt)
         ]
-        
-        tickets = []
-        actions = []
         tool_calls_made = []
         reasoning_text = ""
-        
-        print("\n" + "="*80)
+
+        print("\n" + "=" * 80)
         print("🤖 LLM AGENT - Analyzing incident and deciding on actions...")
-        print("="*80)
+        print("=" * 80)
         print(f"\nIncident: {incident.title}")
         print(f"Severity: {incident.severity.value}")
         print(f"Context: {self._describe_context(context)}")
-        
-        # Agent loop - let LLM make autonomous decisions
+        print(f"Payload ID: {incident.payload_id}")
+
+        # 🔁 Agent loop — let LLM autonomously decide and act
         max_iterations = 10
         for iteration in range(max_iterations):
             print(f"\n--- Iteration {iteration + 1} ---")
-            
+
             try:
                 # Get LLM response with tool binding
                 response = self.llm_with_tools.invoke(messages)
                 print("-------------------res-----------")
                 print(response)
-                
+
                 # Check if LLM wants to call tools
-                if hasattr(response, 'tool_calls') and response.tool_calls:
+                if hasattr(response, "tool_calls") and response.tool_calls:
                     print(f"🎯 LLM decided to call {len(response.tool_calls)} tool(s)")
-                    
-                    # Add AI response to conversation
+
                     messages.append(response)
-                    
-                    # Execute each tool call
+
                     for tool_call in response.tool_calls:
                         tool_name = tool_call["name"]
                         tool_args = tool_call["args"]
                         tool_id = tool_call.get("id", "unknown")
-                        
+
                         print(f"\n  Tool: {tool_name}")
                         print(f"  Args: {json.dumps(tool_args, indent=4)}")
-                        
-                        # Execute the tool directly based on name
+
                         try:
-                            # Call the actual MCP function
+                            # Run the correct tool
                             if tool_name == "create_jira_issue":
-                                result = await create_jira_issue.ainvoke(tool_args)
-                            elif tool_name == "send_slack_alert":
-                                result = await send_slack_alert.ainvoke(tool_args)
-                            elif tool_name == "create_pagerduty_incident":
-                                result = await create_pagerduty_incident.ainvoke(tool_args)
+                                result = await self.tools[0].ainvoke(tool_args)
+                            elif tool_name == "post_slack_alert":
+                                result = await self.tools[1].ainvoke(tool_args)
+                            elif tool_name == "trigger_pagerduty_incident":
+                                result = await self.tools[2].ainvoke(tool_args)
                             else:
                                 result = {"status": "error", "message": f"Unknown tool: {tool_name}"}
-                            
+
                             print(f"  Result: {result}")
-                            
-                            # Track the tool call
+
                             tool_calls_made.append({
                                 "tool": tool_name,
                                 "arguments": tool_args,
                                 "result": result
                             })
-                            
-                            # Build tickets and actions for response
-                            if tool_name == "create_jira_issue" and result.get("status") == "success":
-                                tickets.append(Ticket(
-                                    ticket_id=result['ticket_id'],
-                                    incident_id=incident.id,
-                                    platform="Jira",
-                                    title=tool_args["summary"],
-                                    description=tool_args["description"],
-                                    priority=tool_args["priority"],
-                                    assignee=None,
-                                    created_at=datetime.now().isoformat()
-                                ))
-                                actions.append(f"✅ Jira: {result['ticket_id']} (Priority: {tool_args['priority']})")
-                            
-                            elif tool_name == "create_pagerduty_incident" and result.get("status") == "success":
-                                tickets.append(Ticket(
-                                    ticket_id=result['incident_id'],
-                                    incident_id=incident.id,
-                                    platform="PagerDuty",
-                                    title=tool_args["title"],
-                                    description=tool_args["description"],
-                                    priority=incident.severity.value,
-                                    assignee="On-call Engineer",
-                                    created_at=datetime.now().isoformat(),
-                                    url=result['url']
-                                ))
-                                actions.append(f"🚨 PagerDuty: {result['incident_id']} (Urgency: {tool_args['urgency']})")
-                            
-                            elif tool_name == "send_slack_alert" and result.get("status") == "success":
-                                actions.append(f"💬 Slack: {tool_args['channel']}")
-                            
-                            # Send tool result back to LLM
+
+                            # Add response back to conversation
                             messages.append(ToolMessage(
                                 content=json.dumps(result),
                                 tool_call_id=tool_id
                             ))
-                        
+
                         except Exception as e:
                             print(f"  ❌ Error executing tool: {e}")
                             error_result = {"status": "error", "message": str(e)}
@@ -223,40 +204,58 @@ Think through your decision and call the appropriate tools now."""
                                 content=json.dumps(error_result),
                                 tool_call_id=tool_id
                             ))
-                
+
                 else:
-                    # No more tool calls - LLM is done
+                    # LLM finished decision-making
                     print("\n✅ LLM finished decision-making")
-                    if hasattr(response, 'content') and response.content:
+                    if hasattr(response, "content") and response.content:
                         reasoning_text = response.content
                         print(f"\nReasoning: {reasoning_text[:300]}...")
                     break
-            
+
             except Exception as e:
                 print(f"\n❌ Error in agent loop: {e}")
                 import traceback
                 traceback.print_exc()
                 break
-        
-        print("\n" + "="*80)
-        print(f"✅ EXECUTION COMPLETE - {len(tool_calls_made)} MCP tool(s) called")
-        print("="*80)
-        
-        # Add a note if no tools were called
-        if not actions:
-            actions.append("⚠️ LLM decided no immediate action needed")
-        
-        return {
-            "tickets": tickets,
-            "actions": actions,
-            "reasoning": [reasoning_text or f"LLM autonomously called {len(tool_calls_made)} tool(s)"],
-            "tool_calls": tool_calls_made,
-            "decision_summary": {
-                "total_tools_called": len(tool_calls_made),
-                "tools_used": [tc["tool"] for tc in tool_calls_made],
-                "jira_created": any(tc["tool"] == "create_jira_issue" for tc in tool_calls_made),
-                "pagerduty_created": any(tc["tool"] == "create_pagerduty_incident" for tc in tool_calls_made),
-                "slack_sent": any(tc["tool"] == "send_slack_alert" for tc in tool_calls_made),
-                "autonomous_decision": True
+    
+  
+    def get_payload_from_db(self, payload_id: str) -> dict:
+        """Fetch payload JSON and metadata from classifier_outputs using payload_id."""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT payload, severity_id, matched_pattern, is_incident
+                FROM classifier_outputs
+                WHERE payload_id = ?
+                LIMIT 1
+            """, (payload_id,))
+            row = cursor.fetchone()
+            conn.close()
+
+            if not row:
+                print(f"⚠️ No record found in classifier_outputs for payload_id={payload_id}")
+                return {}
+
+            payload_json = row[0]
+            metadata = {
+                "severity_id": row[1],
+                "matched_pattern": row[2],
+                "is_incident": row[3],
             }
-        }
+
+            try:
+                parsed_payload = json.loads(payload_json)
+            except json.JSONDecodeError:
+                print(f"❌ Error parsing payload JSON for payload_id={payload_id}")
+                parsed_payload = {}
+
+            print(parsed_payload['category'])
+            print("parsed payload")
+            return {"payload": parsed_payload, **metadata}
+
+        except Exception as e:
+            print(f"❌ Database error while fetching payload for {payload_id}: {e}")
+            return {}
+        

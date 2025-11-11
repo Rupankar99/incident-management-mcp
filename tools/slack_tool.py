@@ -1,17 +1,36 @@
 from langchain_core.tools import tool
+import requests
+
+SLACK_MCP = "http://localhost:8003/slack"  # Slack MCP server endpoint
+
 
 @tool
-async def send_slack_alert(channel: str, severity: str, message: str) -> dict:
-    """Send an alert to a Slack channel to notify the team about incidents.
-    
-    Args:
-        channel: Slack channel - e.g. #incidents-critical, #incidents-high, or #incidents
-        severity: Severity level of the incident
-        message: The alert message to send to the team
+def post_slack_alert(
+    channel: str,
+    message: str,
+    severity: str = "medium",
+    user: str = None,
+    thread_ts: str = None
+) -> dict:
     """
-    print(f"🔧 [TOOL CALL] send_slack_alert: {channel} (Severity: {severity})")
-    return {
-        "status": "success",
+    Post an incident alert through the Slack MCP microservice.
+    Mirrors the FastAPI server's 'slack_event' signature exactly.
+    """
+
+    payload = {
         "channel": channel,
-        "severity": severity
+        "message": message,
+        "severity": severity,
+        "user": user,
+        "thread_ts": thread_ts
     }
+
+    try:
+        # Using params since FastAPI parses these from query parameters
+        response = requests.post(SLACK_MCP, params=payload)
+        response.raise_for_status()
+        print("✅ Sent Slack alert to Slack MCP.")
+        return response.json()
+    except Exception as e:
+        print("❌ Slack MCP Error:", e)
+        return {"status": "error", "message": str(e)}
