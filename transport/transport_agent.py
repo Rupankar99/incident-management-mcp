@@ -2,18 +2,15 @@ from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from datetime import datetime
-from models import Ticket, Incident, IncidentReport, IncidentContext
+from models import IncidentContext
 from typing import Any, Dict, List
 import json
 
 from datetime import datetime
+from .utils import build_incident_prompt_context,get_payload_from_db
 
 from tools import create_jira_issue, post_slack_alert, trigger_pagerduty_incident
-import sqlite3
 import json
-
-DB_PATH = "/Users/rupankarchakroborty/Documents/incident-management-2/data.db"
-
 
 class IntelligentTicketingAgent:
     """Intelligent agent that autonomously decides which MCP tools to call"""
@@ -66,8 +63,9 @@ class IntelligentTicketingAgent:
     ) -> dict:
         """Let the LLM autonomously decide which MCP tools to call and execute them."""
 
-        print(incident['payload_id'])
-        payload_record = self.get_payload_from_db(incident['payload_id'])
+        incident_context = build_incident_prompt_context(incident)
+
+        payload_record = get_payload_from_db(incident['payload_id'])
         payload_data = payload_record.get("payload", {})
         payload_metadata = {
             k: v for k, v in payload_record.items() if k != "payload"
@@ -98,40 +96,28 @@ class IntelligentTicketingAgent:
     """
 
         user_prompt = f"""ANALYZE THIS INCIDENT:
+        **Classifier Metadata:**
+        - Severity ID: {payload_metadata.get("severity_id", "N/A")}
+        - Matched Pattern: {payload_metadata.get("matched_pattern", "N/A")}
+        - Is Incident: {payload_metadata.get("is_incident", "N/A")}
 
-    **Incident Details:**
-    - ID: {incident.id}
-    - Title: {incident.title}
-    - Severity: {incident.severity.value}
-    - Service: {incident.service}
-    - Region: {incident.region}
+        **Environment & Context Summary:**
+        {incident_context}
 
-    **Classifier Metadata:**
-    - Severity ID: {payload_metadata.get("severity_id", "N/A")}
-    - Matched Pattern: {payload_metadata.get("matched_pattern", "N/A")}
-    - Is Incident: {payload_metadata.get("is_incident", "N/A")}
+        **Context:**
+        {self._describe_context(context)}
 
-    **Context:**
-    {self._describe_context(context)}
+        **Payload (from classifier_outputs):**
+        {formatted_payload}
 
-    **Technical Details:**
-    - Error Rate: {incident.metrics.get('error_rate', 'N/A')}
-    - Affected Components: {', '.join(incident.affected_components)}
+        **Questions to Consider:**
+        1. Would YOU want to be woken up for this at this time?
+        2. How many customers are affected RIGHT NOW?
+        3. Can this wait until business hours?
+        4. Is this causing revenue loss or just potential issues?
 
-    **Payload (from classifier_outputs):**
-    {formatted_payload}
-
-    **Recent Logs:**
-    {chr(10).join(incident.logs[:3])}
-
-    **Questions to Consider:**
-    1. Would YOU want to be woken up for this at this time?
-    2. How many customers are affected RIGHT NOW?
-    3. Can this wait until business hours?
-    4. Is this causing revenue loss or just potential issues?
-
-    Think through your decision and call the appropriate tools now.
-    """
+        Think through your decision and call the appropriate tools now.
+        """
 
         messages = [
             HumanMessage(content=system_prompt + "\n\n" + user_prompt)
@@ -139,14 +125,7 @@ class IntelligentTicketingAgent:
         tool_calls_made = []
         reasoning_text = ""
 
-        print("\n" + "=" * 80)
-        print("🤖 LLM AGENT - Analyzing incident and deciding on actions...")
-        print("=" * 80)
-        print(f"\nIncident: {incident.title}")
-        print(f"Severity: {incident.severity.value}")
-        print(f"Context: {self._describe_context(context)}")
-        print(f"Payload ID: {incident.payload_id}")
-
+        
         # 🔁 Agent loop — let LLM autonomously decide and act
         max_iterations = 10
         for iteration in range(max_iterations):
@@ -220,42 +199,4 @@ class IntelligentTicketingAgent:
                 break
     
   
-    def get_payload_from_db(self, payload_id: str) -> dict:
-        """Fetch payload JSON and metadata from classifier_outputs using payload_id."""
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT payload, severity_id, matched_pattern, is_incident
-                FROM classifier_outputs
-                WHERE payload_id = ?
-                LIMIT 1
-            """, (payload_id,))
-            row = cursor.fetchone()
-            conn.close()
-
-            if not row:
-                print(f"⚠️ No record found in classifier_outputs for payload_id={payload_id}")
-                return {}
-
-            payload_json = row[0]
-            metadata = {
-                "severity_id": row[1],
-                "matched_pattern": row[2],
-                "is_incident": row[3],
-            }
-
-            try:
-                parsed_payload = json.loads(payload_json)
-            except json.JSONDecodeError:
-                print(f"❌ Error parsing payload JSON for payload_id={payload_id}")
-                parsed_payload = {}
-
-            print(parsed_payload['category'])
-            print("parsed payload")
-            return {"payload": parsed_payload, **metadata}
-
-        except Exception as e:
-            print(f"❌ Database error while fetching payload for {payload_id}: {e}")
-            return {}
-        
+    
