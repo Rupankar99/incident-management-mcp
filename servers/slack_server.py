@@ -1,12 +1,30 @@
+from pathlib import Path
+import sys
 from fastapi import FastAPI, HTTPException
 from datetime import datetime
+from pydantic import BaseModel
 import requests
 
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from database.db.connection import get_connection
+from database.models.all_incident import AllIncidentModel
+
 app = FastAPI(title="Slack MCP Server")
-CENTRAL_API = "http://localhost:8000/incidents"
+
+class SlackRequest(BaseModel):
+    channel: str
+    message: str
+    severity: str = "medium"
+    user: str | None = None
+    thread_ts: str | None = None
+
 
 @app.post("/slack")
-def slack_event(channel: str, message: str, severity: str = "medium", user: str = None, thread_ts: str = None):
+def slack_event(request:SlackRequest):
     """
     Handle Slack incident messages → transform → forward to central incident API.
     """
@@ -16,14 +34,14 @@ def slack_event(channel: str, message: str, severity: str = "medium", user: str 
         # Common fields
         "id": inc_id,
         "source": "slack",
-        "title": message,
-        "description": message,
-        "priority": severity,
+        "title": request.message,
+        "description": request.message,
+        "priority": request.severity.capitalize(),
         "urgency": None,
         "status": "open",
         "created_at": datetime.utcnow().isoformat() + "Z",
         "last_updated": datetime.utcnow().isoformat() + "Z",
-        "reporter": user,
+        "reporter": request.user or "Slack Reporter",
         "assigned_to": None,
 
         # PagerDuty fields (unused)
@@ -39,15 +57,19 @@ def slack_event(channel: str, message: str, severity: str = "medium", user: str 
         "jira_url": None,
 
         # Slack-specific
-        "slack_channel": channel,
-        "slack_thread_ts": thread_ts,
-        "slack_user": user,
-        "slack_permalink": f"https://slack.com/app_redirect?channel={channel}&message_ts={thread_ts}" if thread_ts else None,
+        "slack_channel": request.channel,
+        "slack_thread_ts": request.thread_ts,
+        "slack_user": request.user,
+        "slack_permalink": (
+            f"https://slack.com/app_redirect?channel={request.channel}&message_ts={request.thread_ts}"
+            if request.thread_ts else None
+        ),
     }
 
     try:
-        r = requests.post(CENTRAL_API, json=payload)
-        r.raise_for_status()
-        return {"status": "sent", "tool": "slack", "central_response": r.json()}
+        conn = get_connection()
+        all_incidents_model = AllIncidentModel(conn)
+        all_incidents_model.insert(payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+

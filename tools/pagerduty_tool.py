@@ -1,7 +1,7 @@
 from langchain_core.tools import tool
 import requests
 
-PAGERDUTY_MCP = "http://localhost:8002/pagerduty"  # PagerDuty MCP server endpoint
+PAGERDUTY_MCP = "http://localhost:8003/pagerduty"  # PagerDuty MCP server endpoint
 
 
 @tool
@@ -27,10 +27,11 @@ def trigger_pagerduty_incident(
 
     try:
         # Use params to match FastAPI's query parameter parsing
-        response = requests.post(PAGERDUTY_MCP, params=payload)
+        response = requests.post(PAGERDUTY_MCP, json=payload)
         response.raise_for_status()
         print("✅ Sent PagerDuty incident to PagerDuty MCP.")
         return response.json()
     except Exception as e:
         print("❌ PagerDuty MCP Error:", e)
         return {"status": "error", "message": str(e)}
+

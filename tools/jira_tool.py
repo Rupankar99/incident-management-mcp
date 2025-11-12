@@ -29,7 +29,7 @@ def create_jira_issue(
 
     try:
         # Use params to match FastAPI query-style argument parsing
-        response = requests.post(JIRA_MCP, params=payload)
+        response = requests.post(JIRA_MCP, json=payload)
         response.raise_for_status()
         print("✅ Sent Jira issue to Jira MCP.")
         return response.json()
